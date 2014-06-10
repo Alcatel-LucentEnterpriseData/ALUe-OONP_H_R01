@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+#  Copyright 2014 Alcatel-Lucent Enterprise.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file
+#  except in compliance with the License. You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software distributed under the License
+#  is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+#  either express or implied. See the License for the specific language governing permissions
+#  and limitations under the License.
+#
+#
+# $File: omnidb_setup$
+
+# $Build: OONP_H_R01_6$
+
+# $Date: 05/06/2014 12:10:39$
+
+# $Author: vapoonat$
+
+#
+#
+
+# This script is used to create database tables to be used by OmniSwitch Netowrk 
+# plug-in in OpenStack Neutron database, when the plug-in is used independently.
+# If the OmniSwitch plug-in is used along with OpenVSwitch (OVS) plug-in, 
+# then this script is not required to be executed as the plug-in will use OVS tables.  
+
+echo "Connecting to mysql database and creating tables for OmniSwitch Network Plug-in..."
+mysql <<END_SCRIPT
+
+use quantum;
+
+create table omni_network_bindings(network_id varchar(36) not null, network_type varchar(32) not null, physical_network varchar(64), segmentation_id int(11), primary key(network_id), foreign key(network_id) references networks(id) on delete cascade);
+
+create table omni_vlan_allocations (physical_network varchar(64) not null, vlan_id int(11) not null, allocated tinyint(1) not null, primary key(physical_network, vlan_id));
+
+exit
+
+
+

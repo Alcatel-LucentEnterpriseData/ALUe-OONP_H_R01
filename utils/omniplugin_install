@@ -1,0 +1,321 @@
+#!/bin/bash
+#
+#  Copyright 2014 Alcatel-Lucent Enterprise.
+#
+#  Licensed under the Apache License, Version 2.0 (the "License"); you may
+#  not use this file except in compliance with the License. You may obtain
+#  a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND", either express or
+#  implied. See the License for the specific language governing permissions
+#  and limitations under the License.
+#
+#  RCS keywords:
+#    $Source:$	$Revision:$
+#    $Date:$
+#    $Author:$
+#
+#  P4 fakes:
+#    $File:$
+#    $Build:$
+#    $Date:$
+#    $Author:$
+#
+#
+# This script is used to install the OmniSwitch Network Plug-in
+# in the Controller node of the existing OpenStack installation.
+# It assumes the following path as default, if exists, for
+# plug-in installation.
+#	/usr/lib/python2.7/dist-packages/neutron/
+#	/etc/neutron/
+#
+# Major steps:
+#	1) determine plugin dir and config dir
+#	2) extract execs
+#	3) chown and chmod files
+#	4) if existing conf file, save
+#	5) copy configuration to conf dir
+#	6) set ownership/mods
+#
+#
+# The following exit codes are used:
+#	1 - argument errors
+#	2 - user/group errors
+#	3 - install path errors
+#	4 - missing package file
+#
+
+#
+# things that MAY need changing with each release:
+#
+OONP_OSREL="HAVANA"
+OONP_VER="R01_6"
+OONP_CFG="omniswitch_network_plugin.ini"
+
+OONP_PKG="OONP_${OONP_OSREL:0:1}_${OONP_VER}"
+
+OONP_EXECS="omnidb_setup omniplugin_install omniswitch_clear_db"
+OONP_EXECS="${OONP_EXECS} omniswitch_setup restart"
+OONP_EXECS="${OONP_EXECS} omniswitch_topology_utils.py"
+
+
+#--------------------------------------------------------------------------------
+#--------------------------------------------------------------------------------
+
+usage() {
+#  printf "Usage: ${myname} [-qn] [-d <level>] [-c <dir>] [-i <dir>] [-s <dir>] [-l file] [-u <user>] [-g <group>] {OONP_Package_file}\n"
+  printf "Usage: ${myname} [-q] [-d <level>] [-c <dir>] [-i <dir>] [-s <dir>] [-u <user>] [-g <group>] {OONP_Package_file}\n"
+  printf "       -q quiet mode, no output\n"
+#  printf "       -n do nothing\n"
+  printf "       -d <level>, set debug to 0-5\n"
+  printf "       -c <config dir>, install plugin .ini file into <config dir>\n"
+  printf "       -i <install dir>, install plugin core into <install dir>\n"
+  printf "       -s <source dir>, look for install package in <source dir>\n"
+  printf "       -u <user>, install as <user> (default is neutron)\n"
+  printf "       -g <group>, install as <group> (default is neutron)\n"
+#  printf "       -l <log to file>\n"
+  printf "\n       {OONP_Package_file} - use THIS package over default\n"
+  exit 0
+}
+
+NEUTRON_PATH="/usr/lib/python2.7/dist-packages/neutron"
+NEUTRON_CFG_PATH="/etc/neutron"
+OONP_SRC_PATH=$( pwd )
+INST_PATH=""
+CFG_PATH=""
+SRC_PATH=""
+
+
+NUSER=neutron
+NGROUP=neutron
+
+# front matter - general process info
+myname=${0##*/}
+mydir=${0%/*}
+[[ ${mydir} == ${myname} ]] && mydir="."	# dirname returns . for none
+mypid=$$
+mylog=/tmp/${myname}-${mypid}.log
+mydate=$( date +%d/%m/%Y-%H:%M )
+
+# operational vars
+debug=0
+quiet=0
+donothing=0
+
+# get options and set operation vars
+# NOTE: options that require args and don't have them, will be processed
+#	via the ':' case...
+#OPTIONS="hqnc:i:s:d:u:g:l:"
+OPTIONS="hqnc:i:s:d:u:g:"
+while getopts ${OPTIONS} FLAG ; do
+  case ${FLAG} in
+    'h')           usage ;;
+    'q')           quiet=1 ;;
+    'n')           donothing=1 ;;
+    'c'|'i'|'s' )  if [[ "X${OPTARG}" == "X" ]] ;then
+                     printf "missing directory argument\n"
+                     exit 1
+                   fi
+                   case ${FLAG} in
+                     'c')  CFG_PATH=${OPTARG} ;;
+                     'i')  INST_PATH=${OPTARG} ;;
+                     's')  SRC_PATH=${OPTARG} ;;
+                   esac ;;
+    'u'|'g' )      if [[ "X${OPTARG}" == "X" ]] ;then
+                     printf "missing user/group argument\n"
+                     exit 1
+                   fi
+                   case ${FLAG} in
+                     'u')  NUSER=${OPTARG} ;;
+                     'g')  NGROUP=${OPTARG} ;;
+                   esac ;;
+    'd')  if [ "X${OPTARG}" = "X" ] ; then
+            debug=-1
+          else
+            debug=${OPTARG}
+          fi ;;
+#    'l')  mylog=${OPTARG}
+#          dolog=1
+#          [[ "Z${mylog}" == "Z" ]] && mylog=/dev/null
+#          ;;
+    '?')  usage ;;
+ 
+    # Handle the missing option parameter....
+    ':')  case ${OPTARG} in
+            'd')  debug=-1 ;;
+            '*')  printf "${myname} ERR: unexpected getopts return '${FLAG}' '${OPTARG}'\n"
+                  exit 1 ;;
+          esac ;;
+    '*')  ;;
+  esac
+done
+
+# drop the options to get to any command args
+shftcnt=$(( OPTIND - 1 ))
+shift ${shftcnt}
+_ARGC=$#
+[[ ${_ARGC} -eq 1 ]] && OONP_PKG=${1%.tar.gz}
+#case ${_ARGC} in
+#  1)  OONP_PKG=${1%.tar.gz} ;;
+#  0)  ;;
+#  *)  printf "Too many arguments!\n"
+#      exit 1 ;;
+#esac
+
+# some interloked options...
+[[ ${debug} -ge 1 ]] && quiet=0
+[[ ${donothing} -ne 0 ]] && quiet=0
+
+# setup output redirects
+if [[ ${quiet} -eq 0 ]] ; then
+  exec 4>&1	# for stdout of cmds
+  exec 5>&4	# for stderr of cmds
+  exec 6>&1	# for stdout of echo/print
+else
+  exec 4>/dev/null
+  exec 5>/dev/null
+  exec 6>/dev/null
+fi
+
+
+#===============================================================================
+#===============================================================================
+#
+# NO USER MODIFIABLE PARTS BELOW
+#
+
+
+#------------------------------------------------------------------------------
+# option/parameter validation
+#
+getent passwd ${NUSER} >/dev/null 2>&1
+err=$?
+if [[ ${err} -ne 0 ]] ; then
+  printf "${NUSER} user not found!\n"
+  [[ ${donothing} -eq 0 ]] && exit 2
+fi
+getent group ${NGROUP} >/dev/null 2>&1
+err=$?
+if [[ ${err} -ne 0 ]] ; then
+  printf "${NGROUP} group not found!\n"
+  [[ ${donothing} -eq 0 ]] && exit 2
+fi
+if [[ "X${INST_PATH}" != "X" ]] ; then
+  if [[ ! -d ${INST_PATH} ]] ; then
+    printf "${INST_PATH} does not exist!\n"
+    [[ ${donothing} -eq 0 ]] && exit 3
+  else
+    NEUTRON_PATH=${INST_PATH}
+  fi
+fi
+if [[ "X${CFG_PATH}" != "X" ]] ; then
+  if [[ ! -d ${CFG_PATH} ]] ; then
+    printf "${CFG_PATH} dir does not exist!\n"
+    [[ ${donothing} -eq 0 ]] && exit 3
+  else
+    NEUTRON_CFG_PATH=${CFG_PATH}
+  fi
+fi
+if [[ "X${SRC_PATH}" != "X" ]] ; then
+  if [[ ! -d ${SRC_PATH} ]] ; then
+    printf "${SRC_PATH} not found!\n"
+    [[ ${donothing} -eq 0 ]] && exit 3
+  else
+    OONP_SRC_PATH=${SRC_PATH}
+  fi
+fi
+if [[ ! -f ${OONP_SRC_PATH}/${OONP_PKG%.tar.gz}.tar.gz ]] ; then
+  printf "${OONP_PKG} not found in ${OONP_SRC_PATH}!\n"
+  [[ ${donothing} -eq 0 ]] && exit 4
+fi
+
+
+#----------------------------------
+# echo the installation parameters
+if [[ ${debug} -ge 2 || ${donothing} -eq 1 ]] ; then
+  printf "\n\n--------------------------------------------------------------\n"
+  printf "Installation parameters:\n"
+  printf "  OONP_PKG:          ${OONP_PKG}\n"
+  printf "  OONP_SRC_PATH:     ${OONP_SRC_PATH}\n"
+  printf "  OONP_CFG:          ${OONP_CFG}\n"
+  printf "  NEUTRON_PATH:      ${NEUTRON_PATH}\n"
+  printf "  NEUTRON_CFG_PATH:  ${NEUTRON_CFG_PATH}\n"
+  printf "  NEUTRON_USER:      ${NUSER}\n"
+  printf "  NEUTRON_GROUP:     ${NGROUP}\n\n"
+  printf "  myname:            ${myname}\n"
+  printf "  mydir:             ${mydir}\n"
+  printf "  mylog:             ${mylog}\n"
+  printf "  mydate:            ${mydate}\n\n"
+  printf "  debug:             ${debug}\n"
+  printf "  quiet:             ${quiet}\n"
+  printf "  donothing:         ${donothing}\n\n\n"
+fi
+
+
+
+#------------------------------------------------------------------------------
+# begin installation
+#
+printf "\n*********** OmniSwitch Network Plug-in Installation Begin... ***************\n\n" >&6
+
+
+#-----------------------
+# untar/install plugin
+plugindir="${NEUTRON_PATH}/plugins/omniswitch"
+if [[ ! -d ${plugindir} ]] ; then
+  printf "Creating omniswitch plugin dir <${plugindir}> ...\n" >&6
+  [[ ${donothing} -eq 0 ]] && mkdir -p ${plugindir} > /dev/null 2>&1
+fi
+
+printf "Installing plug-in & config file ...\n" >&6
+printf "Extracting plug-in package <${OONP_PKG}> into <${plugindir}> ...\n" >&6
+_args=xf
+[[ ${quiet} -eq 0 ]] && _args=xvf
+if [[ ${donothing} -eq 0 ]] ; then
+  ( cd ${plugindir}; tar -${_args} ${OONP_SRC_PATH}/${OONP_PKG%.tar.gz}.tar.gz )
+  printf "Setting file ownerships and permissions...\n" >&6
+  chown -R ${NUSER}:${NGROUP} ${plugindir} >&4 2>&5
+  for file in ${OONP_EXECS} ; do
+    [[ -f ${plugindir}/${file} ]] && \
+      chmod 755 ${plugindir}/${file} >&4 2>&5
+  done
+fi
+
+
+#---------------------
+# install config file
+printf "Installing plug-in config file ...\n" >&6
+plugin_conf_dir="${NEUTRON_CFG_PATH}/plugins/omniswitch"
+if [ ! -d ${plugin_conf_dir} ]; then
+  printf "  Creating plug-in config dir <${plugin_conf_dir}> ...\n" >&6
+  [[ ${donothing} -eq 0 ]] && mkdir -p ${plugin_conf_dir} >&4 2>&5
+fi
+
+# move configuration file into place
+plugin_conf_file="${plugin_conf_dir}/${OONP_CFG}"
+if [[ -f ${plugin_conf_file} ]] ; then
+  printf "  Saving existing plugin configuration file <${OONP_CFG}>...\n" >&6
+  [[ ${donothing} -eq 0 ]] && \
+    cp ${plugin_conf_file} ${plugin_conf_file}.SAV >&4 2>&5
+fi
+
+if [[ -f ${plugindir}/${OONP_CFG} ]] ; then
+  [[ ${debug} -ge 3 ]] && \
+    printf "  Found ${OONP_CFG} in ${plugindir}..." >&6
+  if [[ ${donothing} -eq 0 ]] ; then
+    cp ${plugindir}/${OONP_CFG} ${plugin_conf_dir} >&4 2>&5
+    chown ${NUSER}:${NGROUP} ${plugin_conf_file} >&4 2>&5
+    chmod 644 ${plugin_conf_file} >&4 2>&5
+  fi
+else
+  printf "  Distribution ${OONP_CFG} file not found!" >&6
+fi
+
+#printf "Installation completed!!\n"
+
+printf "\n*********** OmniSwitch Network Plug-in Installation End. ***************\n\n" >&6
+
